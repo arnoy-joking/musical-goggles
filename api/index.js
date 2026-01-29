@@ -1,71 +1,76 @@
 export default async function handler(req, res) {
-  // --- CORS HEADERS (The Fix) ---
-  res.setHeader('Access-Control-Allow-Credentials', true);
-  res.setHeader('Access-Control-Allow-Origin', '*'); // Allow ALL domains
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
-  res.setHeader(
-    'Access-Control-Allow-Headers',
-    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
-  );
+  const { videoId } = req.query;
 
-  // Handle "OPTIONS" preflight request immediately
-  if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
+  if (!videoId) {
+    return res.status(400).json({ error: "Missing videoId parameter" });
   }
-  // -----------------------------
-
-  const { url, cookies } = req.query;
-
-  if (!url || !url.includes('youtube.com/shorts')) {
-    return res.status(400).json({ error: 'Please provide a valid YouTube Shorts URL' });
-  }
-
-  // Extract current ID
-  const currentIdMatch = url.match(/shorts\/([a-zA-Z0-9_-]{11})/);
-  const currentId = currentIdMatch ? currentIdMatch[1] : null;
-
-  // Prepare Cookies
-  const defaultCookie = 'CONSENT=YES+cb.20210328-17-p0.en+FX+417; SOCS=CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiAo_CmBg;';
-  const headersCookies = cookies || defaultCookie;
 
   try {
-    const response = await fetch(url, {
+    // 1. Fetch raw cookies from your Gist
+    const gistUrl = "https://gist.githubusercontent.com/arnoy-joking/d8ab574454c00269fa2449cfd116b6cd/raw";
+    const gistResponse = await fetch(gistUrl);
+    const rawText = await gistResponse.text();
+
+    // 2. Parse Netscape format to Header format
+    const cookieHeader = rawText
+      .split('\n')
+      .filter(line => line.trim() && !line.startsWith('#'))
+      .map(line => {
+        const parts = line.split('\t');
+        return parts.length >= 7 ? `${parts[5].trim()}=${parts[6].trim()}` : null;
+      })
+      .filter(Boolean)
+      .join('; ');
+
+    // 3. YouTube Desktop API Request
+    const youtubeUrl = "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
+
+    const payload = {
+      context: {
+        client: {
+          clientName: "WEB",
+          clientVersion: "2.20240210.01.00",
+          platform: "DESKTOP",
+          hl: "en",
+          gl: "US",
+          timeZone: "Asia/Dhaka",
+          utcOffsetMinutes: 360
+        },
+        user: {
+          lockedSafetyMode: false
+        }
+      },
+      videoId: videoId,
+      playbackContext: {
+        contentPlaybackContext: {
+          signatureTimestamp: 19744 // Update this if signatures fail
+        }
+      },
+      contentCheckOk: true,
+      racyCheckOk: true
+    };
+
+    const ytResponse = await fetch(youtubeUrl, {
+      method: "POST",
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Cookie': headersCookies
-      }
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Content-Type": "application/json",
+        "Cookie": cookieHeader,
+        "Origin": "https://www.youtube.com",
+        "Referer": "https://www.youtube.com/"
+      },
+      body: JSON.stringify(payload)
     });
 
-    const html = await response.text();
+    const data = await ytResponse.json();
 
-    // REGEX PATTERN: Look for shorts/ID followed by " or \
-    const regex = /shorts(?:\\\/|\/)([a-zA-Z0-9_-]{11})(?=["\\])/g;
-
-    const uniqueIds = new Set();
-    let match;
-
-    while ((match = regex.exec(html)) !== null) {
-      const videoId = match[1];
-      if (videoId !== currentId) {
-        uniqueIds.add(videoId);
-      }
-    }
-
-    const nextVideos = Array.from(uniqueIds).map(id => ({
-      videoId: id,
-      url: `https://www.youtube.com/shorts/${id}`,
-      thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`
-    }));
-
-    return res.status(200).json({
-      count: nextVideos.length,
-      currentVideoId: currentId,
-      nextVideos: nextVideos
-    });
+    // Set CORS headers so your HTML can access it
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    
+    return res.status(200).json(data);
 
   } catch (error) {
-    return res.status(500).json({ error: 'Server Error', details: error.message });
+    return res.status(500).json({ error: error.message });
   }
 }
